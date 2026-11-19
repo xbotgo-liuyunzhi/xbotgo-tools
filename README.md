@@ -6,12 +6,20 @@ XBotGo 团队命令行工具。用 `xbotgo --help` 查看可用子命令。
 
 需要 Git 和 Python 3.9 或更新版本。`commit` 还需要已登录的 Codex CLI，以及能使用 `gpt-6-luna` 的账号或工作区。每位使用者使用自己的 Codex 登录。[Codex CLI 安装说明](https://learn.chatgpt.com/docs/codex/cli)
 
-获取本仓库后，在仓库根目录运行：
+在任意目录运行以下命令即可通过 HTTPS 安装，无需 GitHub 登录或 SSH 密钥。
 
 ```sh
-./install.sh
-xbotgo --help
+(install_dir=$(mktemp -d) && trap 'rm -rf "$install_dir"' EXIT && git clone --depth 1 --branch main https://github.com/xbotgo-liuyunzhi/xbotgo-tools.git "$install_dir" && "$install_dir/install.sh")
 ```
+
+如果已经克隆仓库，可以在仓库根目录运行 `./install.sh`。安装后可用以下命令验证。
+
+```sh
+xbotgo --help
+pre-commit --version
+```
+
+安装脚本会复用已安装且可用的 `pre-commit`。找不到可用命令时，脚本通过 pip 将它安装到 `xbotgo` 专用的 Python 虚拟环境中，并将 `pre-commit` 命令放到与 `xbotgo` 相同的 bin 目录。这一步需要 Python 提供 `venv` 和 `ensurepip`，并且能访问 pip 软件包源。
 
 默认将命令安装到 `~/.local/bin`，将工具和提交规范安装到 `~/.local/share/xbotgo`。如果 shell 找不到命令，把下面这行加入 shell 配置后重新打开终端：
 
@@ -19,7 +27,7 @@ xbotgo --help
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-更新仓库后重新运行 `./install.sh` 即可更新本机版本。可通过 `XBOTGO_INSTALL_PREFIX` 指定其他安装前缀。
+更新时可重新运行 HTTPS 安装命令，或拉取最新代码后运行 `./install.sh`。可通过 `XBOTGO_INSTALL_PREFIX` 指定其他安装前缀。
 
 ## `xbotgo commit`
 
