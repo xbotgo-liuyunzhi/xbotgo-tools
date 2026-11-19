@@ -1,18 +1,69 @@
 #!/usr/bin/env python3
 
 import argparse
+import fcntl
+import os
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
+
+
+UPDATE_REPOSITORY = "https://github.com/xbotgo-liuyunzhi/xbotgo-tools.git"
+
+
+def update_installation(prefix):
+    share_dir = prefix / "share" / "xbotgo"
+    if not (share_dir / ".installed").is_file():
+        raise RuntimeError("请先安装 xbotgo（见 README），再运行 xbotgo update。")
+
+    lock_path = share_dir / ".update.lock"
+    with lock_path.open("a") as lock, TemporaryDirectory(prefix="xbotgo-update-") as temporary:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        checkout = Path(temporary) / "source"
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", "main", UPDATE_REPOSITORY, checkout],
+                cwd=temporary,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise RuntimeError(f"下载失败：{error}") from error
+
+        try:
+            subprocess.run(
+                [checkout / "install.sh"],
+                cwd=checkout,
+                env={**os.environ, "XBOTGO_INSTALL_PREFIX": str(prefix)},
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise RuntimeError(f"安装失败：{error}") from error
+
+    print(f"已更新 {prefix / 'bin' / 'xbotgo'}")
 
 
 def main():
     parser = argparse.ArgumentParser(prog="xbotgo", description="XBotGo 团队命令行工具")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("commit", help="拟定 Git 提交信息并创建一次本地提交")
+    commands.add_parser("update", help="更新当前安装的 XBotGo Tools")
     args = parser.parse_args()
 
-    tools_dir = Path(__file__).resolve().parent.parent / "share" / "xbotgo"
+    prefix = Path(__file__).resolve().parent.parent
+    if args.command == "update":
+        try:
+            update_installation(prefix)
+        except (OSError, RuntimeError) as error:
+            print(f"xbotgo update 失败：{error}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            print("xbotgo update 已取消。", file=sys.stderr)
+            return 130
+        return 0
+
+    tools_dir = prefix / "share" / "xbotgo"
     sys.path.insert(0, str(tools_dir))
     if args.command == "commit":
         from xbotgo_commit import commit_current_repository

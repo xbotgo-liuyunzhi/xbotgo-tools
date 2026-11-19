@@ -27,7 +27,17 @@ pre-commit --version
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-更新时可重新运行 HTTPS 安装命令，或拉取最新代码后运行 `./install.sh`。可通过 `XBOTGO_INSTALL_PREFIX` 指定其他安装前缀。
+可通过 `XBOTGO_INSTALL_PREFIX` 指定其他安装前缀。
+
+## `xbotgo update`
+
+在任意目录运行以下命令，将当前安装更新到 GitHub `main` 分支的最新版本。
+
+```sh
+xbotgo update
+```
+
+更新会使用当前命令所在的安装前缀，并复用可用的 `pre-commit`。如果旧版尚无 `update` 子命令，请先运行一次上面的 HTTPS 一键安装命令。使用自定义前缀的用户需在这次安装时设置原来的 `XBOTGO_INSTALL_PREFIX`。
 
 ## `xbotgo commit`
 
