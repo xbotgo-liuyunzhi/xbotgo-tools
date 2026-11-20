@@ -28,6 +28,7 @@ class CommitTest(unittest.TestCase):
             "attempt = len(log.read_text().splitlines()) if log.exists() else 0\n"
             "with log.open('a') as file:\n"
             "    file.write(json.dumps(sys.stdin.read()) + '\\n')\n"
+            "print(f'Codex diagnostic {attempt + 1}', file=sys.stderr)\n"
             "responses = json.loads(Path(os.environ['TEST_CODEX_RESPONSES']).read_text())\n"
             "if attempt >= len(responses):\n"
             "    sys.exit(99)\n"
@@ -80,14 +81,46 @@ class CommitTest(unittest.TestCase):
     def test_manual_message_commits_all_changes_without_codex(self):
         remote = self.add_remote()
         original_head = self.git("rev-parse", "HEAD")
-        message = "fix(settings): 调整设置\n\n保留提交正文。"
+        self.git("config", "core.autocrlf", "true")
+        self.git("config", "core.safecrlf", "warn")
+        hook = self.repo / ".git" / "hooks" / "commit-msg"
+        hook.write_text("#!/bin/sh\necho 'hook output'\necho 'hook diagnostic' >&2\n")
+        hook.chmod(0o755)
+        subject = "fix(settings): 调整设置"
+        message = f"{subject}\n\n保留提交正文。"
         result = self.run_command(CLI, "commit", "-m", message)
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')} {subject}\n")
+        self.assertEqual(result.stderr, "")
         self.assertEqual(self.git("log", "-1", "--format=%B"), message)
         self.assertEqual(self.git("show", "HEAD:settings.txt"), "settings")
         self.assertEqual(self.prompts(), [])
         self.assertEqual(self.git("--git-dir", remote, "rev-parse", "main"), original_head)
+
+    def test_signed_commit_result_omits_signature_verification(self):
+        signer = self.repo.parent / "gpg"
+        signer.write_text(
+            "#!/bin/sh\n"
+            "case \"$*\" in\n"
+            "    *--verify*) echo 'signature verification diagnostic' >&2; exit 1 ;;\n"
+            "esac\n"
+            "cat >/dev/null\n"
+            "echo '[GNUPG:] SIG_CREATED D 1 10 00 0 TEST' >&2\n"
+            "printf '%s\\n' '-----BEGIN PGP SIGNATURE-----' test '-----END PGP SIGNATURE-----'\n"
+        )
+        signer.chmod(0o755)
+        self.git("config", "gpg.program", signer)
+        self.git("config", "commit.gpgSign", "true")
+        self.git("config", "log.showSignature", "true")
+        message = "fix(settings): 调整设置"
+
+        result = self.run_command(CLI, "commit", "-m", message)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("signature verification diagnostic", self.git("log", "-1"))
+        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')} {message}\n")
+        self.assertEqual(result.stderr, "")
 
     def test_push_sends_the_new_commit_after_success(self):
         remote = self.add_remote()
@@ -147,6 +180,17 @@ class CommitTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("xbotgo push 失败", result.stderr)
 
+    def test_first_draft_success_shows_only_progress_and_commit_result(self):
+        message = "fix(settings): 调整设置"
+        self.codex_responds_with({"message": message, "error": None})
+
+        result = self.run_command(CLI, "commit")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "正在生成提交信息…\n")
+        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')} {message}\n")
+        self.assertEqual(len(self.prompts()), 1)
+
     def test_retries_cli_failure_with_optional_scope(self):
         message = "fix: 调整设置"
         self.codex_responds_with(42, {"message": message, "error": None})
@@ -154,6 +198,8 @@ class CommitTest(unittest.TestCase):
         result = self.run_command(CLI, "commit")
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "正在生成提交信息…\n正在重试生成提交信息…\n")
+        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')} {message}\n")
         first, second = self.prompts()
         self.assertNotIn("`type: 描述`", first)
         self.assertIn("`type: 描述`", second)
@@ -166,11 +212,33 @@ class CommitTest(unittest.TestCase):
         result = self.run_command(CLI, "commit")
 
         self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr.splitlines()[:2], ["正在生成提交信息…", "正在重试生成提交信息…"])
+        self.assertRegex(
+            result.stderr,
+            r"首次生成提交信息失败：无法确定 scope\nCodex diagnostic 1\n"
+            r"重试生成提交信息失败：Expecting value[^\n]*\nCodex diagnostic 2\n",
+        )
         self.assertIn("xbotgo commit -m", result.stderr)
-        self.assertIn("无法确定 scope", result.stderr)
         self.assertEqual(len(self.prompts()), 2)
         self.assertEqual(self.git("log", "-1", "--format=%s"), "Initial commit")
         self.assertEqual(self.git("diff", "--cached", "--name-only"), "settings.txt")
+
+    def test_merge_commit_shows_only_commit_result(self):
+        self.git("checkout", "-b", "topic")
+        (self.repo / "topic.txt").write_text("topic\n", encoding="utf-8")
+        self.git("add", "topic.txt")
+        self.git("commit", "-m", "Add topic")
+        self.git("checkout", "main")
+        self.git("merge", "--no-commit", "--no-ff", "-m", "Merge topic", "topic")
+
+        result = self.run_command(CLI, "commit")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')} Merge topic\n")
+        self.assertEqual(len(self.git("log", "-1", "--format=%P").split()), 2)
+        self.assertEqual(self.prompts(), [])
 
     def test_git_hook_failure_does_not_regenerate_message(self):
         remote = self.add_remote()
@@ -179,13 +247,16 @@ class CommitTest(unittest.TestCase):
         message = "fix(settings): 调整设置"
         self.codex_responds_with({"message": message, "error": None})
         hook = self.repo / ".git" / "hooks" / "commit-msg"
-        hook.write_text("#!/bin/sh\necho 'hook rejected message' >&2\nexit 1\n")
+        hook.write_text("#!/bin/sh\necho 'hook output'\necho 'hook rejected message' >&2\nexit 1\n")
         hook.chmod(0o755)
 
         result = self.run_command(CLI, "commit", "-p")
 
         self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("hook output", result.stderr)
         self.assertIn("hook rejected message", result.stderr)
+        self.assertNotIn("Codex diagnostic", result.stderr)
         self.assertEqual(len(self.prompts()), 1)
         self.assertEqual(self.git("log", "-1", "--format=%s"), "Unpushed commit")
         self.assertEqual(self.git("--git-dir", remote, "rev-parse", "main"), original_head)

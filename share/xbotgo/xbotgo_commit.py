@@ -3,7 +3,7 @@ from pathlib import Path
 from shutil import which
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, TemporaryFile
 
 
 SKILL = Path(__file__).resolve().with_name("git-chinese-commit") / "SKILL.md"
@@ -23,7 +23,13 @@ RESULT_SCHEMA = {
 }
 
 
-def draft_message(codex, repo, *, allow_missing_scope=False):
+def replay_diagnostics(log):
+    log.seek(0)
+    for line in log:
+        print(line.decode("utf-8", errors="replace").rstrip("\n"), file=sys.stderr)
+
+
+def draft_message(codex, repo, diagnostic_log, *, allow_missing_scope=False):
     with SKILL.open(encoding="utf-8"):
         pass
     scope_rule = (
@@ -51,6 +57,7 @@ def draft_message(codex, repo, *, allow_missing_scope=False):
                 "--output-schema", str(schema), "--output-last-message", str(output), "-",
             ],
             cwd=repo, input=prompt, encoding="utf-8", stdout=subprocess.DEVNULL,
+            stderr=diagnostic_log,
         )
         if execution.returncode:
             raise RuntimeError(f"Codex CLI 退出码为 {execution.returncode}")
@@ -73,15 +80,34 @@ def generate_message(repo):
     if not codex:
         raise RuntimeError(f"找不到 Codex CLI。{MANUAL_COMMIT_HINT}")
 
-    try:
-        return draft_message(codex, repo)
-    except (OSError, RuntimeError, ValueError) as error:
-        print(f"首次生成提交信息失败（{error}），正在重试。", file=sys.stderr)
+    with TemporaryFile() as first_log, TemporaryFile() as retry_log:
+        print("正在生成提交信息…", file=sys.stderr, flush=True)
+        try:
+            return draft_message(codex, repo, first_log)
+        except (OSError, RuntimeError, ValueError) as error:
+            first_failure = str(error)
+            print("正在重试生成提交信息…", file=sys.stderr, flush=True)
 
-    try:
-        return draft_message(codex, repo, allow_missing_scope=True)
-    except (OSError, RuntimeError, ValueError) as error:
-        raise RuntimeError(f"重试生成提交信息失败（{error}）。{MANUAL_COMMIT_HINT}") from error
+        try:
+            return draft_message(codex, repo, retry_log, allow_missing_scope=True)
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"首次生成提交信息失败：{first_failure}", file=sys.stderr)
+            replay_diagnostics(first_log)
+            print(f"重试生成提交信息失败：{error}", file=sys.stderr)
+            replay_diagnostics(retry_log)
+            raise RuntimeError(f"无法自动生成提交信息。{MANUAL_COMMIT_HINT}") from error
+
+
+def run_git_with_diagnostics(command, *, input_text=None):
+    with TemporaryFile() as log:
+        try:
+            subprocess.run(
+                command, input=input_text, encoding="utf-8", stdout=log,
+                stderr=subprocess.STDOUT, check=True,
+            )
+        except subprocess.CalledProcessError:
+            replay_diagnostics(log)
+            raise
 
 
 def push_repository(repo=None):
@@ -102,7 +128,7 @@ def commit_current_repository(message=None, *, push=False):
     if merging not in (0, 1):
         raise RuntimeError("无法读取 Git 合并状态。")
 
-    subprocess.run([*git, "add", "-A"], check=True)
+    run_git_with_diagnostics([*git, "add", "-A"])
     if merging != 0:
         staged = subprocess.run([*git, "diff", "--cached", "--quiet"])
         if staged.returncode == 0:
@@ -111,15 +137,20 @@ def commit_current_repository(message=None, *, push=False):
         if staged.returncode != 1:
             staged.check_returncode()
 
+    commit_input = None
     if message is not None:
-        subprocess.run([*git, "commit", "-m", message], check=True)
+        commit_args = ["-m", message]
     elif merging == 0:
-        subprocess.run([*git, "commit", "--no-edit"], check=True)
+        commit_args = ["--no-edit"]
     else:
-        message = generate_message(repo)
-        subprocess.run([*git, "commit", "-F", "-"], input=message, encoding="utf-8", check=True)
+        commit_args = ["-F", "-"]
+        commit_input = generate_message(repo)
 
-    subprocess.run([*git, "log", "-1", "--format=%H %s"], check=True)
+    run_git_with_diagnostics([*git, "commit", *commit_args], input_text=commit_input)
+    subprocess.run(
+        [*git, "--no-pager", "log", "-1", "--no-show-signature", "--format=%H %s"],
+        check=True,
+    )
 
     if push:
         try:
