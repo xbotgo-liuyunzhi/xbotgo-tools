@@ -4,7 +4,7 @@ XBotGo 团队命令行工具。用 `xbotgo --help` 查看可用子命令。
 
 ## 安装
 
-需要 Git 和 Python 3.9 或更新版本。`commit` 还需要已登录的 Codex CLI，以及能使用 `gpt-6-luna` 的账号或工作区。每位使用者使用自己的 Codex 登录。[Codex CLI 安装说明](https://learn.chatgpt.com/docs/codex/cli)
+需要 Git 和 Python 3.9 或更新版本。自动生成提交信息还需要已登录的 Codex CLI，以及能使用 `gpt-6-luna` 的账号或工作区。每位使用者使用自己的 Codex 登录。[Codex CLI 安装说明](https://learn.chatgpt.com/docs/codex/cli)
 
 在任意目录运行以下命令即可通过 HTTPS 安装，无需 GitHub 登录或 SSH 密钥。
 
@@ -45,9 +45,10 @@ xbotgo update
 
 ```sh
 xbotgo commit
+xbotgo commit -m "提交说明"
 ```
 
 - 通过 `git add -A` 纳入已暂存和未暂存的改动，包括未忽略的新文件和删除项。
-- 普通提交用 `gpt-6-luna` 和 `medium` 推理强度按随包提供的 `git-chinese-commit` 规范拟定提交信息。Codex 会读取暂存区 diff 和必要的本地提交规则。真正的 merge commit 使用 Git 默认提交信息。
+- 指定 `-m` 时直接使用提供的提交信息，无需 Codex。未指定 `-m` 的 merge commit 使用 Git 默认提交信息。
+- 自动生成提交信息时，用 `gpt-6-luna` 和 `medium` 推理强度按随包提供的 `git-chinese-commit` 规范拟定。Codex 会读取暂存区 diff 和必要的本地提交规则。生成失败时自动重试一次。重试时，无法确认具体 scope 且仓库允许省略时可用无 scope 的提交信息。重试失败后保留暂存改动，并提示用 `-m` 手动提交。
 - 创建一次本地提交并输出完整哈希和标题。跳过审查、测试、构建和额外校验，沿用仓库现有 Git hooks，不执行 push。
-- 拟定提交信息失败时，已暂存的改动可继续用于后续提交。

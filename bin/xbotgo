@@ -47,7 +47,8 @@ def update_installation(prefix):
 def main():
     parser = argparse.ArgumentParser(prog="xbotgo", description="XBotGo 团队命令行工具")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("commit", help="拟定 Git 提交信息并创建一次本地提交")
+    commit = commands.add_parser("commit", help="创建一次本地 Git 提交")
+    commit.add_argument("-m", "--message", help="使用指定的提交信息，无需 Codex")
     commands.add_parser("update", help="更新当前安装的 XBotGo Tools")
     args = parser.parse_args()
 
@@ -69,7 +70,7 @@ def main():
         from xbotgo_commit import commit_current_repository
 
         try:
-            commit_current_repository()
+            commit_current_repository(args.message)
         except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as error:
             print(f"xbotgo commit 提交失败：{error}", file=sys.stderr)
             return 1
