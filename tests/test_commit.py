@@ -125,6 +125,28 @@ class CommitTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.git("--git-dir", remote, "rev-parse", "main"), original_head)
 
+    def test_standalone_push_sends_existing_commits_only(self):
+        remote = self.add_remote()
+        self.git("commit", "--quiet", "--allow-empty", "-m", "Unpushed commit")
+        head = self.git("rev-parse", "HEAD")
+        self.git("add", "settings.txt")
+        (self.repo / "settings.txt").write_text("updated settings\n", encoding="utf-8")
+        status = self.git("status", "--porcelain")
+
+        result = self.run_command(CLI, "push")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("--git-dir", remote, "rev-parse", "main"), head)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual(self.git("status", "--porcelain"), status)
+        self.assertEqual(self.prompts(), [])
+
+    def test_standalone_push_reports_git_failure(self):
+        result = self.run_command(CLI, "push")
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("xbotgo push 失败", result.stderr)
+
     def test_retries_cli_failure_with_optional_scope(self):
         message = "fix: 调整设置"
         self.codex_responds_with(42, {"message": message, "error": None})

@@ -84,6 +84,10 @@ def generate_message(repo):
         raise RuntimeError(f"重试生成提交信息失败（{error}）。{MANUAL_COMMIT_HINT}") from error
 
 
+def push_repository(repo=None):
+    subprocess.run(["git", "push"], cwd=repo, check=True)
+
+
 def commit_current_repository(message=None, *, push=False):
     root = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True)
     repo = Path(root.removesuffix("\n"))
@@ -119,8 +123,8 @@ def commit_current_repository(message=None, *, push=False):
 
     if push:
         try:
-            subprocess.run([*git, "push"], check=True)
+            push_repository(repo)
         except (OSError, subprocess.CalledProcessError) as error:
             raise RuntimeError(
-                f"本地提交已创建，推送失败（{error}）。处理 Git 报错后可运行 git push 重试。"
+                f"本地提交已创建，推送失败（{error}）。处理 Git 报错后可运行 xbotgo push 重试。"
             ) from error
