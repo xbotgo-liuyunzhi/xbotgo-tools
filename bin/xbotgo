@@ -49,6 +49,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commit = commands.add_parser("commit", help="创建一次本地 Git 提交")
     commit.add_argument("-m", "--message", help="使用指定的提交信息，无需 Codex")
+    commit.add_argument("-p", "--push", action="store_true", help="提交成功后执行 git push")
     commands.add_parser("update", help="更新当前安装的 XBotGo Tools")
     args = parser.parse_args()
 
@@ -70,9 +71,9 @@ def main():
         from xbotgo_commit import commit_current_repository
 
         try:
-            commit_current_repository(args.message)
+            commit_current_repository(args.message, push=args.push)
         except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as error:
-            print(f"xbotgo commit 提交失败：{error}", file=sys.stderr)
+            print(f"xbotgo commit 失败：{error}", file=sys.stderr)
             return 1
     return 0
 
