@@ -1,11 +1,17 @@
 import fcntl
+import hashlib
+import io
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import tarfile
 import tempfile
 import time
 import unittest
+import zipfile
 
 
 SOURCE = Path(__file__).resolve().parents[1]
@@ -29,15 +35,18 @@ class UpdateTest(unittest.TestCase):
             if (SOURCE / name).exists():
                 shutil.copy2(SOURCE / name, self.remote / name)
 
-        tools = self.root / "tools"
-        tools.mkdir()
-        self.pre_commit = tools / "pre-commit"
-        self.pre_commit.write_text("#!/bin/sh\nprintf 'pre-commit 1.2.3\\n'\n")
-        self.pre_commit.chmod(0o755)
+        self.tools = self.root / "tools"
+        self.tools.mkdir()
+        for command in ("dirname", "git", "sleep", "touch"):
+            (self.tools / command).symlink_to(shutil.which(command))
+        (self.tools / "python3").symlink_to(sys.executable)
+        self.pre_commit = self.write_tool("pre-commit", "pre-commit 1.2.3")
+        self.write_tool("gh", "gh version existing")
+        self.write_tool("lark-cli", "lark-cli version existing")
         self.env = {
             **os.environ,
             "HOME": str(self.home),
-            "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+            "PATH": str(self.tools),
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",
@@ -50,6 +59,74 @@ class UpdateTest(unittest.TestCase):
         self.git("add", ".")
         self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                  "commit", "--quiet", "-m", "Update fixture")
+
+    def write_tool(self, name, version, exit_code=0):
+        tool = self.tools / name
+        tool.write_text(f"#!/bin/sh\nprintf '%s\\n' '{version}'\nexit {exit_code}\n")
+        tool.chmod(0o755)
+        return tool
+
+    def mock_cli_releases(self, system="Darwin"):
+        release_dir = self.root / "releases"
+        release_dir.mkdir()
+        checksums = {"gh_2.105.0_checksums.txt": [], "checksums.txt": []}
+        gh_stem = "gh_2.105.0_macOS_arm64" if system == "Darwin" else "gh_2.105.0_linux_amd64"
+        gh_extension = ".zip" if system == "Darwin" else ".tar.gz"
+        lark_platform = "darwin-arm64" if system == "Darwin" else "linux-amd64"
+        for name, filename, member, manifest in (
+            ("gh", gh_stem + gh_extension, f"{gh_stem}/bin/gh", "gh_2.105.0_checksums.txt"),
+            ("lark-cli", f"lark-cli-1.0.100-{lark_platform}.tar.gz", "lark-cli", "checksums.txt"),
+        ):
+            script = "#!/bin/sh\n"
+            if name == "gh":
+                branch_ref = json.dumps({"ref": "refs/heads/develop", "object": {"sha": "0" * 40}})
+                script += (
+                    'if [ "$1" = api ]; then\n'
+                    f"    printf '%s\\n' '{branch_ref}'\n"
+                    '    exit 0\n'
+                    'fi\n'
+                )
+            payload = (script + f"printf '%s\\n' '{name} version downloaded'\n").encode()
+            archive = release_dir / filename
+            if filename.endswith(".zip"):
+                with zipfile.ZipFile(archive, "w") as output:
+                    output.writestr(member, payload)
+            else:
+                with tarfile.open(archive, "w:gz") as output:
+                    info = tarfile.TarInfo(member)
+                    info.size = len(payload)
+                    output.addfile(info, io.BytesIO(payload))
+            checksums[manifest].append(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {filename}\n")
+        for name, lines in checksums.items():
+            (release_dir / name).write_text("".join(lines))
+
+        self.downloads = self.root / "downloads"
+        fake_network = self.root / "fake_network"
+        fake_network.mkdir()
+        (fake_network / "sitecustomize.py").write_text('''import os
+from pathlib import Path
+import platform
+import urllib.request
+from urllib.parse import urlsplit
+
+def download(url, **kwargs):
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc != "github.com" or not parsed.path.startswith((
+        "/cli/cli/releases/download/v2.105.0/", "/larksuite/cli/releases/download/v1.0.100/",
+    )):
+        raise AssertionError(f"Unexpected release URL: {url}")
+    filename = parsed.path.rsplit("/", 1)[-1]
+    with Path(os.environ["TEST_DOWNLOADS"]).open("a") as log:
+        print(filename, file=log)
+    return (Path(os.environ["TEST_RELEASES"]) / filename).open("rb")
+
+platform.system = lambda: os.environ["TEST_RELEASE_SYSTEM"]
+platform.machine = lambda: "arm64" if platform.system() == "Darwin" else "x86_64"
+urllib.request.urlopen = download
+''')
+        self.env.update(PYTHONPATH=str(fake_network), TEST_RELEASES=str(release_dir),
+                        TEST_DOWNLOADS=str(self.downloads), TEST_RELEASE_SYSTEM=system)
+        return release_dir
 
     def git(self, *args):
         self.run_command("git", "-C", self.remote, *args)
@@ -85,6 +162,95 @@ class UpdateTest(unittest.TestCase):
         self.assertFalse((self.home / ".local/share/xbotgo/pre-commit-venv").exists())
         self.assertEqual(self.run_command(installed, "commit", "--help").returncode, 0)
         self.assertEqual(self.run_command(installed, "update").returncode, 0)
+
+    def test_install_only_downloads_missing_cli_and_reuses_it_on_update(self):
+        self.mock_cli_releases("Linux")
+        (self.tools / "lark-cli").unlink()
+        installed = self.install()
+        downloaded = installed.parent / "lark-cli"
+
+        self.assertEqual(self.run_command(downloaded, "--version").stdout.strip(), "lark-cli version downloaded")
+        self.assertFalse((installed.parent / "gh").exists())
+        requests = self.downloads.read_text().splitlines()
+        self.assertCountEqual(requests, ["checksums.txt", "lark-cli-1.0.100-linux-amd64.tar.gz"])
+
+        self.run_command(installed, "update")
+        self.assertEqual(self.downloads.read_text().splitlines(), requests)
+
+    def test_update_repairs_missing_clis_in_custom_prefix(self):
+        self.mock_cli_releases()
+        installed = self.install(self.root / "custom prefix")
+        self.assertFalse(self.downloads.exists())
+        for name in ("gh", "lark-cli"):
+            (self.tools / name).unlink()
+        self.publish_new_version()
+
+        self.run_command(installed, "update")
+
+        for name in ("gh", "lark-cli"):
+            self.assertEqual(self.run_command(installed.parent / name, "--version").stdout.strip(),
+                             f"{name} version downloaded")
+        self.assertIn("XBotGo 更新测试版本", self.run_command(installed, "--help").stdout)
+        for name in ("gh", "lark-cli"):
+            self.write_tool(name, "broken PATH wrapper", exit_code=1)
+        self.git("remote", "add", "team", "git@github.com:xbotgo/team.git")
+        pr = subprocess.run([installed, "pr", "develop", "-r", "张三"], cwd=self.remote, env=self.env,
+                            text=True, capture_output=True, timeout=30)
+        self.assertIn("飞书审核人查询失败", pr.stderr)
+        self.assertIn("lark-cli 返回的响应无效", pr.stderr)
+
+    def test_install_repairs_broken_external_command(self):
+        self.mock_cli_releases()
+        outside = self.write_tool("lark-cli", "broken PATH wrapper", exit_code=1)
+        previous = outside.read_bytes()
+
+        installed = self.install()
+
+        self.assertTrue((installed.parent / "lark-cli").is_file())
+        self.assertEqual(outside.read_bytes(), previous)
+
+    def test_install_preserves_occupied_dependency_path(self):
+        self.mock_cli_releases()
+        (self.tools / "gh").unlink()
+        prefix = self.root / "custom prefix"
+        bin_dir = prefix / "bin"
+        bin_dir.mkdir(parents=True)
+        occupied = bin_dir / "gh"
+        occupied.write_text("existing file")
+        env = {**self.env, "XBOTGO_INSTALL_PREFIX": str(prefix)}
+
+        result = self.run_command(SOURCE / "install.sh", env=env, check=False)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(occupied), result.stderr)
+        self.assertEqual(occupied.read_text(), "existing file")
+        self.assertFalse(self.downloads.exists())
+
+    def test_invalid_cli_archive_preserves_installed_xbotgo_for_retry(self):
+        release_dir = self.mock_cli_releases()
+        installed = self.install()
+        previous_cli = installed.read_bytes()
+        self.publish_new_version()
+        for name in ("gh", "lark-cli"):
+            (self.tools / name).unlink()
+        manifest = release_dir / "checksums.txt"
+        valid = manifest.read_text()
+        manifest.write_text(f"{'0' * 64}  lark-cli-1.0.100-darwin-arm64.tar.gz\n")
+
+        result = self.run_command(installed, "update", check=False)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("lark-cli", result.stderr)
+        self.assertIn("SHA-256", result.stderr)
+        self.assertEqual(installed.read_bytes(), previous_cli)
+        self.assertTrue((installed.parent / "gh").is_file())
+        self.assertFalse((installed.parent / "lark-cli").exists())
+
+        manifest.write_text(valid)
+        self.run_command(installed, "update")
+        lark = installed.parent / "lark-cli"
+        self.assertEqual(self.run_command(lark, "--version").stdout.strip(), "lark-cli version downloaded")
+        self.assertEqual(self.downloads.read_text().splitlines().count("gh_2.105.0_macOS_arm64.zip"), 1)
 
     def test_updates_custom_prefix_through_symlink(self):
         prefix = self.root / "custom prefix"

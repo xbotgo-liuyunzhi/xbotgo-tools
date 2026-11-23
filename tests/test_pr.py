@@ -10,6 +10,8 @@ import unittest
 CLI = Path(__file__).resolve().parents[1] / "bin" / "xbotgo"
 REMOTE_URL = "git@github.com:xbotgo/team.git"
 PR_URL = "https://github.com/xbotgo/team/pull/42"
+REVIEWER = {"localized_name": "张三", "open_id": "ou_zhangsan", "email": "zhangsan@example.com"}
+REVIEWER_LOGIN = "reviewer-zhang"
 
 
 class PullRequestTest(unittest.TestCase):
@@ -26,6 +28,8 @@ class PullRequestTest(unittest.TestCase):
         self.events_file = self.root / "events.jsonl"
         self.prs = self.root / "prs.json"
         self.prs.write_text("[]")
+        self.reviewers = self.root / "reviewers.json"
+        self.reviewers.write_text("[]")
         self.env = {
             **os.environ,
             "PATH": f"{self.root}{os.pathsep}{os.environ['PATH']}",
@@ -41,6 +45,12 @@ class PullRequestTest(unittest.TestCase):
             "TEST_PRS": str(self.prs),
             "TEST_PR_URL": PR_URL,
             "TEST_REMOTE": str(self.remote),
+            "TEST_REVIEWERS": str(self.reviewers),
+            "TEST_LARK_CONTACT": json.dumps({"ok": True, "data": {"users": [REVIEWER], "has_more": False}}),
+            "TEST_GH_SEARCH": json.dumps({
+                "total_count": 1, "incomplete_results": False, "items": [{"login": REVIEWER_LOGIN, "type": "User"}],
+            }),
+            "TEST_GH_USER": json.dumps({"login": REVIEWER_LOGIN, "type": "User", "email": REVIEWER["email"]}),
         }
         self.write_executable(self.root / "git", '''#!/usr/bin/env python3
 import json
@@ -86,6 +96,20 @@ import sys
 from urllib.parse import unquote
 
 args = sys.argv[1:]
+prs = Path(os.environ["TEST_PRS"])
+reviewers = Path(os.environ["TEST_REVIEWERS"])
+
+def current_pull_request():
+    pull = json.loads(prs.read_text())[0]
+    pull["id"] = 1234
+    ref = "refs/heads/" + pull["head"]["ref"]
+    sha = subprocess.check_output([os.environ["TEST_REAL_GIT"], "--git-dir", os.environ["TEST_REMOTE"],
+                                   "rev-parse", "--verify", ref], text=True).strip()
+    pull["head"]["sha"] = os.environ.get("TEST_PR_HEAD", sha)
+    pull["state"] = os.environ.get("TEST_PR_STATE", "open")
+    pull["requested_reviewers"] = json.loads(reviewers.read_text())
+    return pull
+
 ref_prefix = "repos/xbotgo/team/git/ref/heads/"
 ref_endpoint = next((arg for arg in args if arg.startswith(ref_prefix)), None)
 if args[:1] == ["api"] and ref_endpoint:
@@ -99,6 +123,37 @@ if args[:1] == ["api"] and ref_endpoint:
     print(json.dumps({"ref": ref, "object": {"sha": result.stdout.strip()}}))
     sys.exit()
 
+if args[:1] == ["api"]:
+    method_index = args.index("--method")
+    method, endpoint = args[method_index + 1:method_index + 3]
+    event = {
+        "search/users": "github_search",
+        "users/reviewer-zhang": "github_user",
+        "repos/xbotgo/team/pulls/42": "pull_request",
+        "repos/xbotgo/team/pulls/42/requested_reviewers": "request_review",
+    }.get(endpoint)
+    if event:
+        payload = json.load(sys.stdin) if method == "POST" else None
+        with Path(os.environ["TEST_EVENTS"]).open("a") as log:
+            print(json.dumps([event, args, payload]), file=log)
+        if event == "github_search":
+            print(os.environ["TEST_GH_SEARCH"])
+        elif event == "github_user":
+            print(os.environ["TEST_GH_USER"])
+        elif event == "pull_request":
+            print(json.dumps(current_pull_request()))
+        elif event == "request_review":
+            if os.environ.get("TEST_GH_REVIEW_FAILURE"):
+                sys.exit("GitHub rejected review request")
+            pull = current_pull_request()
+            pending = pull["requested_reviewers"]
+            pending.extend({"login": login} for login in payload["reviewers"])
+            reviewers.write_text(json.dumps(pending))
+            pull["head"]["sha"] = os.environ.get("TEST_PR_HEAD_AFTER_REQUEST", pull["head"]["sha"])
+            pull["state"] = os.environ.get("TEST_PR_STATE_AFTER_REQUEST", pull["state"])
+            print(json.dumps(pull))
+        sys.exit()
+
 with Path(os.environ["TEST_EVENTS"]).open("a") as log:
     if args[:2] == ["pr", "create"]:
         body = Path(args[args.index("--body-file") + 1]).read_text(encoding="utf-8")
@@ -106,7 +161,6 @@ with Path(os.environ["TEST_EVENTS"]).open("a") as log:
     else:
         print(json.dumps(["lookup", args]), file=log)
 
-prs = Path(os.environ["TEST_PRS"])
 if args[:1] == ["api"]:
     print(prs.read_text())
     sys.exit()
@@ -123,6 +177,31 @@ prs.write_text(json.dumps([{"html_url": url, "head": {"ref": head, "repo": repo}
 if os.environ.get("TEST_GH_FAILURE") == "race":
     sys.exit("A pull request already exists")
 print(url)
+''')
+        self.write_executable(self.root / "lark-cli", '''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+if args[:2] == ["contact", "+search-user"]:
+    event = "lark_contact"
+elif args[:2] == ["im", "+messages-send"]:
+    event = "lark_send"
+else:
+    sys.exit("Unsupported lark-cli command")
+with Path(os.environ["TEST_EVENTS"]).open("a") as log:
+    print(json.dumps([event, args]), file=log)
+
+if event == "lark_contact":
+    response = json.loads(os.environ["TEST_LARK_CONTACT"])
+else:
+    response = {"ok": True, "data": {"message_id": "om_review"}}
+    if os.environ.get("TEST_LARK_SEND_FAILURE"):
+        response = {"ok": False, "error": {"message": "缺少发消息权限"}}
+print(json.dumps(response), file=sys.stdout if response["ok"] else sys.stderr)
+sys.exit(0 if response["ok"] else 1)
 ''')
         self.git("init", "--quiet", "--initial-branch=develop")
         self.git("init", "--bare", "--quiet", "--initial-branch=develop", self.remote)
@@ -143,9 +222,9 @@ print(url)
             capture_output=True, check=True, timeout=10,
         ).stdout.strip()
 
-    def run_pr(self, base="develop", **env):
+    def run_pr(self, base="develop", *options, **env):
         return subprocess.run(
-            [CLI, "pr", base], cwd=self.repo, env={**self.env, **env}, text=True,
+            [CLI, "pr", base, *options], cwd=self.repo, env={**self.env, **env}, text=True,
             capture_output=True, timeout=10,
         )
 
@@ -168,9 +247,157 @@ print(url)
             "commit-tree", f"{base}^{{tree}}", "-p", base, "-m", "Remote target updated",
         )
 
-    def assert_success(self, result):
+    def assert_success(self, result, url=PR_URL):
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[-1], url)
+
+    def test_multiple_reviewer_options_fail_before_lookup(self):
+        result = self.run_pr("develop", "-r", "张三", "--reviewer", "李四")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("一位审核人", result.stderr)
+        self.assertEqual(self.events(), [])
+
+    def test_new_pr_resolves_name_and_notifies_both_services(self):
+        self.responses.write_text(json.dumps([
+            {"message": "feat(settings): 更新设置", "error": None},
+            {"title": "更新设置", "body": "## 改动\n\n更新设置。"},
+        ]))
+        (self.repo / "settings.txt").write_text("local\n")
+
+        self.assert_success(self.run_pr("develop", "-r", REVIEWER["localized_name"]))
+
+        events = self.events()
+        self.assertEqual([event[0] for event in events], [
+            "lark_contact", "github_search", "github_user", "codex", "push", "lookup", "codex", "create",
+            "pull_request", "request_review", "lark_send",
+        ])
+        self.assertEqual(events[0][1][2:], ["--query", "张三", "--as", "user", "--format", "json"])
+        self.assertIn('q="zhangsan@example.com" in:email type:user', events[1][1])
+        self.assertIn("github.com", events[1][1])
+        self.assertIn("github.com", events[9][1])
+        self.assertEqual(events[9][2], {"reviewers": [REVIEWER_LOGIN]})
+        send = events[-1][1]
+        self.assertEqual(send[send.index("--as") + 1], "user")
+        self.assertEqual(send[send.index("--user-id") + 1], REVIEWER["open_id"])
+        self.assertIn(PR_URL, send[send.index("--text") + 1])
+        self.assertLessEqual(len(send[send.index("--idempotency-key") + 1]), 50)
+
+    def test_existing_pr_resolves_email_and_skips_pending_github_request(self):
+        self.commit_change()
+        self.assert_success(self.run_pr())
+        self.events_file.unlink()
+        self.reviewers.write_text(json.dumps([{"login": REVIEWER_LOGIN}, {"login": "another-reviewer"}]))
+        enterprise_contact = {**REVIEWER, "enterprise_email": "work@example.com"}
+        contacts = {"ok": True, "data": {"users": [enterprise_contact], "has_more": False}}
+
+        self.assert_success(self.run_pr(
+            "develop", "--reviewer", " ZHANGSAN@example.com ", TEST_LARK_CONTACT=json.dumps(contacts),
+        ))
+
+        events = self.events()
+        self.assertEqual([event[0] for event in events], [
+            "lark_contact", "github_search", "github_user", "lookup", "pull_request", "lark_send",
+        ])
+        self.assertIn('q="zhangsan@example.com" in:email type:user', events[1][1])
+
+    def test_reviewer_lookup_errors_leave_commit_push_and_pr_pending(self):
+        (self.repo / "settings.txt").write_text("local\n")
+        head = self.git("rev-parse", "HEAD")
+        cases = [
+            ("同名", "飞书", {"users": [
+                REVIEWER, {**REVIEWER, "open_id": "ou_other", "email": "other@example.com"},
+            ]}, None, None),
+            ("双邮箱", "work@example.com", {"users": [{**REVIEWER, "enterprise_email": "work@example.com"}]},
+             None, None),
+            ("查询不完整", "飞书", {"users": [REVIEWER], "has_more": True}, None, None),
+            ("邮箱未公开", "公开邮箱", {"users": [REVIEWER]},
+             {"total_count": 0, "incomplete_results": False, "items": []}, None),
+            ("GitHub 匹配不唯一", "GitHub", {"users": [REVIEWER]},
+             {"total_count": 2, "incomplete_results": False, "items": [{"login": REVIEWER_LOGIN}]}, None),
+            ("GitHub 邮箱不匹配", "公开邮箱", {"users": [REVIEWER]}, None,
+             {"login": REVIEWER_LOGIN, "type": "User", "email": "other@example.com"}),
+        ]
+        for label, diagnostic, data, search, profile in cases:
+            with self.subTest(label=label):
+                env = {"TEST_LARK_CONTACT": json.dumps({"ok": True, "data": {"has_more": False, **data}})}
+                if search:
+                    env["TEST_GH_SEARCH"] = json.dumps(search)
+                if profile:
+                    env["TEST_GH_USER"] = json.dumps(profile)
+                result = self.run_pr("develop", "-r", "张三", **env)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertTrue({event[0] for event in self.events()}
+                                <= {"lark_contact", "github_search", "github_user"})
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual(self.git("status", "--porcelain"), "?? settings.txt")
+        self.assertEqual(self.prs.read_text(), "[]")
+
+    def test_github_request_failure_keeps_pr_link_and_skips_feishu(self):
+        self.commit_change()
+        result = self.run_pr("develop", "-r", "张三", TEST_GH_REVIEW_FAILURE="yes")
+
+        self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout.splitlines()[-1], PR_URL)
+        self.assertIn("GitHub 审核请求", result.stderr)
+        self.assertIn("GitHub rejected review request", result.stderr)
+        self.assertEqual([event[0] for event in self.events()][-2:], ["pull_request", "request_review"])
+
+    def test_feishu_retry_reuses_pr_request_and_idempotency_key(self):
+        self.commit_change()
+        failed = self.run_pr("develop", "-r", "张三", TEST_LARK_SEND_FAILURE="yes")
+
+        self.assertEqual(failed.returncode, 1)
+        self.assertEqual(failed.stdout.splitlines()[-1], PR_URL)
+        self.assertIn("飞书审核私信", failed.stderr)
+        self.assertIn("缺少发消息权限", failed.stderr)
+        alias = PR_URL.replace("/team/", "/TEAM/")
+        prs = json.loads(self.prs.read_text())
+        prs[0]["html_url"] = alias
+        self.prs.write_text(json.dumps(prs))
+        self.assert_success(self.run_pr("develop", "-r", "张三"), url=alias)
+        self.git("commit", "--quiet", "--allow-empty", "-m", "Update PR head")
+        self.assert_success(self.run_pr("develop", "-r", "张三"), url=alias)
+
+        events = self.events()
+        names = [event[0] for event in events]
+        self.assertEqual(names.count("create"), 1)
+        self.assertEqual(names.count("request_review"), 1)
+        self.assertEqual(names.count("codex"), 1)
+        keys = [args[args.index("--idempotency-key") + 1] for name, args, *_ in events if name == "lark_send"]
+        self.assertEqual(len(keys), 3)
+        self.assertEqual(keys[0], keys[1])
+        self.assertNotEqual(keys[1], keys[2])
+
+    def test_closed_or_changed_pr_skips_notifications(self):
+        self.commit_change()
+        self.assert_success(self.run_pr())
+        self.events_file.unlink()
+        for env in ({"TEST_PR_HEAD": "0" * 40}, {"TEST_PR_STATE": "closed"}):
+            with self.subTest(env=env):
+                result = self.run_pr("develop", "-r", "张三", **env)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout.splitlines()[-1], PR_URL)
+                self.assertIn("GitHub 审核请求", result.stderr)
+        self.assertFalse({"request_review", "lark_send"} & {event[0] for event in self.events()})
+
+    def test_pr_closed_or_changed_during_review_request_skips_feishu(self):
+        self.commit_change()
+        self.assert_success(self.run_pr())
+        for env in ({"TEST_PR_HEAD_AFTER_REQUEST": "0" * 40}, {"TEST_PR_STATE_AFTER_REQUEST": "closed"}):
+            with self.subTest(env=env):
+                self.events_file.unlink()
+                self.reviewers.write_text("[]")
+                result = self.run_pr("develop", "-r", "张三", **env)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout.splitlines()[-1], PR_URL)
+                self.assertIn("GitHub 审核请求", result.stderr)
+                self.assertEqual(self.events()[-1][0], "request_review")
 
     def test_uncommitted_changes_are_committed_and_pushed_before_creating_pr(self):
         self.responses.write_text(json.dumps([

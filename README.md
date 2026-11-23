@@ -17,9 +17,13 @@ XBotGo 团队命令行工具。用 `xbotgo --help` 查看可用子命令。
 ```sh
 xbotgo --help
 pre-commit --version
+gh --version
+lark-cli --version
 ```
 
 安装脚本会复用已安装且可用的 `pre-commit`。找不到可用命令时，脚本通过 pip 将它安装到 `xbotgo` 专用的 Python 虚拟环境中，并将 `pre-commit` 命令放到与 `xbotgo` 相同的 bin 目录。这一步需要 Python 提供 `venv` 和 `ensurepip`，并且能访问 pip 软件包源。
+
+安装和更新会复用 `PATH` 或安装前缀的 `bin` 目录中可用的 `gh` 和 `lark-cli`。缺少命令时，macOS 和 Linux 的 x86_64、ARM64 环境会从官方发行页下载对应二进制，校验 SHA-256 后放到 `xbotgo` 的 `bin` 目录。首次使用 PR 功能时，请按下文完成登录和授权。[GitHub CLI 发行页](https://github.com/cli/cli/releases) · [飞书 CLI 发行页](https://github.com/larksuite/cli/releases)
 
 默认将命令安装到 `~/.local/bin`，将工具和提交规范安装到 `~/.local/share/xbotgo`。如果 shell 找不到命令，把下面这行加入 shell 配置后重新打开终端：
 
@@ -37,7 +41,7 @@ export PATH="$HOME/.local/bin:$PATH"
 xbotgo update
 ```
 
-更新会使用当前命令所在的安装前缀，并复用可用的 `pre-commit`。如果旧版尚无 `update` 子命令，请先运行一次上面的 HTTPS 一键安装命令。使用自定义前缀的用户需在这次安装时设置原来的 `XBOTGO_INSTALL_PREFIX`。
+更新会使用当前命令所在的安装前缀，并补齐缺失的安装依赖。如果旧版尚无 `update` 子命令，请先运行一次上面的 HTTPS 一键安装命令。使用自定义前缀的用户需在这次安装时设置原来的 `XBOTGO_INSTALL_PREFIX`。
 
 ## `xbotgo commit`
 
@@ -76,10 +80,16 @@ xbotgo commit -p -m "提交说明"
 
 ```sh
 xbotgo pr <目标分支>
+xbotgo pr develop -r "张三"
+xbotgo pr develop --reviewer zhangsan@example.com
 ```
 
 需要已登录的 GitHub CLI（`gh auth login`）和 Codex CLI。源分支和目标分支位于当前分支的推送仓库。若有未提交改动，先按 `xbotgo commit` 的规则提交。若有未推送的提交，再通过 `xbotgo push` 推送当前分支。首次推送会建立远程跟踪关系。
 
-Codex 根据目标分支与已推送提交之间的改动生成中文标题和 Markdown 正文，随后直接创建 PR。已有相同源分支和目标分支的开放 PR 时，直接返回其链接。成功时，标准输出的最后一行是 PR 链接。
+Codex 根据目标分支与已推送提交之间的改动生成中文标题和 Markdown 正文，随后直接创建 PR。已有相同源分支和目标分支的开放 PR 时，复用该 PR。取得 PR 链接后，标准输出的最后一行是该链接。
 
-如果中途失败，已完成的提交和推送会保留。处理报错后，可以重新运行同一命令。
+`-r` 或 `--reviewer` 接受一位审核人的飞书姓名或完整邮箱。使用时需要以当前用户身份登录 `lark-cli`，并授权通讯录查询和私聊发送权限。命令在提交和推送前核对飞书联系人及 GitHub 账号。GitHub 账号需公开与飞书通讯录一致的邮箱。同名或联系人有多个邮箱时，请用唯一的完整邮箱指定审核人。
+
+创建或复用 PR 后，命令发起 GitHub 审核请求，再以当前飞书用户身份发送包含 PR 链接的私信。已有待处理的 GitHub 审核请求时，直接进入飞书通知步骤。对同一审核人、PR 和提交，一小时内重试使用同一个飞书幂等键。
+
+如果中途失败，已完成的提交和推送会保留。通知失败时，命令以非零状态退出，并在标准错误中说明失败渠道。处理报错后，可以重新运行同一命令，继续通知已有的开放 PR。

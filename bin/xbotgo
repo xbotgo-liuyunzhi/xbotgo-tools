@@ -53,8 +53,12 @@ def main():
     commands.add_parser("push", help="推送已有的 Git 提交")
     pr = commands.add_parser("pr", help="提交并推送当前分支，然后创建 GitHub PR")
     pr.add_argument("base", metavar="目标分支", help="要合并到的 GitHub 分支")
+    pr.add_argument("-r", "--reviewer", action="append", metavar="审核人",
+                    help="按飞书姓名或邮箱在 GitHub 和飞书通知一位审核人")
     commands.add_parser("update", help="更新当前安装的 XBotGo Tools")
     args = parser.parse_args()
+    if args.command == "pr" and args.reviewer and len(args.reviewer) > 1:
+        pr.error("每次只能指定一位审核人。")
 
     prefix = Path(__file__).resolve().parent.parent
     if args.command == "update":
@@ -80,7 +84,8 @@ def main():
         else:
             from xbotgo_pr import create_pull_request
 
-            create_pull_request(args.base)
+            reviewer = args.reviewer[0] if args.reviewer else None
+            create_pull_request(args.base, reviewer=reviewer)
     except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as error:
         print(f"xbotgo {args.command} 失败：{error}", file=sys.stderr)
         return 1
