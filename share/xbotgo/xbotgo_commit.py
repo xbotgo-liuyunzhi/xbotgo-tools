@@ -148,7 +148,10 @@ def commit_current_repository(message=None, *, push=False):
 
     run_git_with_diagnostics([*git, "commit", *commit_args], input_text=commit_input)
     subprocess.run(
-        [*git, "--no-pager", "log", "-1", "--no-show-signature", "--format=%H %s"],
+        [
+            *git, "--no-pager", "log", "-1", "--no-show-signature", "--color=auto",
+            "--format=%C(bold yellow)%H%C(reset)%n%C(bold 205)%s%C(reset)",
+        ],
         check=True,
     )
 

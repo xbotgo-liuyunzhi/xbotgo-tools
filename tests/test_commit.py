@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import pty
 import subprocess
 import tempfile
 import unittest
@@ -83,6 +84,7 @@ class CommitTest(unittest.TestCase):
         original_head = self.git("rev-parse", "HEAD")
         self.git("config", "core.autocrlf", "true")
         self.git("config", "core.safecrlf", "warn")
+        self.git("config", "color.ui", "always")
         hook = self.repo / ".git" / "hooks" / "commit-msg"
         hook.write_text("#!/bin/sh\necho 'hook output'\necho 'hook diagnostic' >&2\n")
         hook.chmod(0o755)
@@ -91,12 +93,29 @@ class CommitTest(unittest.TestCase):
         result = self.run_command(CLI, "commit", "-m", message)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')} {subject}\n")
+        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')}\n{subject}\n")
         self.assertEqual(result.stderr, "")
         self.assertEqual(self.git("log", "-1", "--format=%B"), message)
         self.assertEqual(self.git("show", "HEAD:settings.txt"), "settings")
         self.assertEqual(self.prompts(), [])
         self.assertEqual(self.git("--git-dir", remote, "rev-parse", "main"), original_head)
+
+    def test_commit_result_colors_each_line_in_a_terminal(self):
+        subject = "fix(settings): Adjust settings"
+        terminal_env = {**self.env, "TERM": "xterm-256color"}
+        terminal_env.pop("NO_COLOR", None)
+        master, slave = pty.openpty()
+        with os.fdopen(master, "rb", buffering=0) as output, os.fdopen(slave, "wb") as terminal:
+            result = subprocess.run(
+                [CLI, "commit", "-m", subject], cwd=self.repo, env=terminal_env,
+                stdout=terminal, stderr=subprocess.PIPE, text=True, timeout=10,
+            )
+            os.set_blocking(output.fileno(), False)
+            actual = (output.read() or b"").decode().replace("\r\n", "\n")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sha = self.git("rev-parse", "HEAD")
+        self.assertEqual(actual, f"\x1b[1;33m{sha}\x1b[m\n\x1b[1;38;5;205m{subject}\x1b[m\n")
 
     def test_signed_commit_result_omits_signature_verification(self):
         signer = self.repo.parent / "gpg"
@@ -119,7 +138,7 @@ class CommitTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("signature verification diagnostic", self.git("log", "-1"))
-        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')} {message}\n")
+        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')}\n{message}\n")
         self.assertEqual(result.stderr, "")
 
     def test_push_sends_the_new_commit_after_success(self):
@@ -188,7 +207,7 @@ class CommitTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "正在生成提交信息…\n")
-        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')} {message}\n")
+        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')}\n{message}\n")
         self.assertEqual(len(self.prompts()), 1)
 
     def test_retries_cli_failure_with_optional_scope(self):
@@ -199,7 +218,7 @@ class CommitTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "正在生成提交信息…\n正在重试生成提交信息…\n")
-        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')} {message}\n")
+        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')}\n{message}\n")
         first, second = self.prompts()
         self.assertNotIn("`type: 描述`", first)
         self.assertIn("`type: 描述`", second)
@@ -236,7 +255,7 @@ class CommitTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "")
-        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')} Merge topic\n")
+        self.assertEqual(result.stdout, f"{self.git('rev-parse', 'HEAD')}\nMerge topic\n")
         self.assertEqual(len(self.git("log", "-1", "--format=%P").split()), 2)
         self.assertEqual(self.prompts(), [])
 

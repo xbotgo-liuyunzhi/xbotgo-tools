@@ -41,12 +41,15 @@ xbotgo update
 
 ## `xbotgo commit`
 
-1. **自动写提交说明。** Codex 根据暂存区 diff 撰写说明，也可以用 `-m` 提供自己的说明。
-2. **统一团队提交格式。** 优先遵循仓库规则，默认使用 `type(scope): 中文说明`，技术名词保留英文。
-3. **一条命令完成提交。** 自动暂存整个仓库的改动，沿用 Git hooks，提交后输出完整哈希和标题。加 `-p` 可在提交成功后推送。
-4. **节省 token 和等待时间。** 使用 `gpt-6-luna` 和中等（`medium`）推理强度，聚焦暂存区 diff 和必要的提交规则。
+![1. 自动写提交说明。](docs/assets/commit-1-auto-message-text-b45980.svg) Codex 根据暂存区 diff 撰写说明，也可以用 `-m` 提供自己的说明。
 
-把琢磨 commit message 的脑力活交给 AI。可以运行 `git log --oneline`，参考本仓库的提交历史。
+![2. 统一团队提交格式。](docs/assets/commit-2-consistent-format-text-b45980.svg) 优先遵循仓库规则，默认使用 `type(scope): 中文说明`，技术名词保留英文。
+
+![3. 一条命令完成提交。](docs/assets/commit-3-one-command-text-b45980.svg) 自动暂存整个仓库的改动，沿用 Git hooks，提交后分两行输出完整哈希和标题。加 `-p` 可在提交成功后推送。
+
+![4. 节省 token 和等待时间。](docs/assets/commit-4-save-time-text-b45980.svg) 使用 `gpt-6-luna` 和中等（`medium`）推理强度，聚焦暂存区 diff 和必要的提交规则。
+
+![把琢磨 commit message 的脑力活交给 AI。](docs/assets/commit-ai-summary-text-b45980.svg) 可以运行 `git log --oneline`，参考本仓库的提交历史。
 
 在目标 Git 仓库中运行：
 
@@ -60,7 +63,7 @@ xbotgo commit -p -m "提交说明"
 - 通过 `git add -A` 纳入已暂存和未暂存的改动，包括未忽略的新文件和删除项。
 - 指定 `-m` 时直接使用提供的提交信息，无需 Codex。未指定 `-m` 的 merge commit 使用 Git 默认提交信息。
 - 自动生成提交信息时，用 `gpt-6-luna` 和 `medium` 推理强度按随包提供的 `git-chinese-commit` 规范拟定。Codex 会读取暂存区 diff 和必要的本地提交规则。生成失败时自动重试一次。重试时，无法确认具体 scope 且仓库允许省略时可用无 scope 的提交信息。重试失败后保留暂存改动，并提示用 `-m` 手动提交。
-- 创建一次本地提交并输出完整哈希和标题。跳过审查、测试、构建和额外校验，沿用仓库现有 Git hooks。
+- 创建一次本地提交。终端分两行显示黄色加粗的完整 SHA 和粉色加粗的提交标题。通过管道或重定向时输出两行纯文本。跳过审查、测试、构建和额外校验，沿用仓库现有 Git hooks。
 - 指定 `-p` 或 `--push` 时，在提交成功后执行 `git push`，推送目标由 Git 配置决定。推送失败时保留本地提交，可单独运行 `xbotgo push` 重试。
 
 ## `xbotgo push`
