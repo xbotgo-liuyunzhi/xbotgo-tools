@@ -37,6 +37,7 @@ def ensure_pre_commit(bin_dir, share_dir):
 def install_files(bin_dir, share_dir):
     files = (
         (SOURCE / "share/xbotgo/xbotgo_commit.py", share_dir / "xbotgo_commit.py", 0o644),
+        (SOURCE / "share/xbotgo/xbotgo_pr.py", share_dir / "xbotgo_pr.py", 0o644),
         (SOURCE / "share/xbotgo/git-chinese-commit/SKILL.md",
          share_dir / "git-chinese-commit" / "SKILL.md", 0o644),
         (None, share_dir / ".installed", 0o644),

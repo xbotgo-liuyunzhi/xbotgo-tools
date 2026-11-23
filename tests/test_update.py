@@ -99,6 +99,19 @@ class UpdateTest(unittest.TestCase):
         self.assertIn("XBotGo 更新测试版本", self.run_command(alias, "--help").stdout)
         self.assertFalse(unrelated_prefix.exists())
 
+    def test_installation_and_update_include_pr_command(self):
+        installed = self.install()
+        before = self.run_command(installed, "pr", "develop", check=False)
+        self.assertEqual(before.returncode, 1, before.stderr)
+        self.assertIn("xbotgo pr 失败", before.stderr)
+        payload = installed.parent.parent / "share/xbotgo/xbotgo_pr.py"
+        payload.unlink()
+
+        self.assertEqual(self.run_command(installed, "update").returncode, 0)
+        after = self.run_command(installed, "pr", "develop", check=False)
+        self.assertEqual(after.returncode, 1, after.stderr)
+        self.assertIn("xbotgo pr 失败", after.stderr)
+
     def test_clone_failure_preserves_installed_version(self):
         installed = self.install()
         before = installed.read_bytes()

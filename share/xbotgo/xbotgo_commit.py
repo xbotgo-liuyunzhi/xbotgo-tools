@@ -45,10 +45,23 @@ def draft_message(codex, repo, diagnostic_log, *, allow_missing_scope=False):
 若技能文件无法读取或仓库规则冲突，message 为 null，error 写明原因。
 {scope_rule}
 """
-    with TemporaryDirectory(prefix="xbotgo-commit-") as directory:
+    result = run_codex_json(codex, repo, prompt, RESULT_SCHEMA, diagnostic_log)
+
+    if not isinstance(result, dict):
+        raise RuntimeError("Codex 返回的提交信息格式无效")
+    if result.get("error"):
+        raise RuntimeError(result["error"])
+    message = result.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise RuntimeError("Codex 未返回提交信息")
+    return message
+
+
+def run_codex_json(codex, repo, prompt, result_schema, diagnostic_log):
+    with TemporaryDirectory(prefix="xbotgo-codex-") as directory:
         schema = Path(directory) / "schema.json"
         output = Path(directory) / "message.json"
-        schema.write_text(json.dumps(RESULT_SCHEMA), encoding="utf-8")
+        schema.write_text(json.dumps(result_schema), encoding="utf-8")
         execution = subprocess.run(
             [
                 codex, "exec", "--cd", str(repo), "--model", "gpt-6-luna",
@@ -61,22 +74,18 @@ def draft_message(codex, repo, diagnostic_log, *, allow_missing_scope=False):
         )
         if execution.returncode:
             raise RuntimeError(f"Codex CLI 退出码为 {execution.returncode}")
-        result = json.loads(output.read_text(encoding="utf-8"))
+        return json.loads(output.read_text(encoding="utf-8"))
 
-    if not isinstance(result, dict):
-        raise RuntimeError("Codex 返回的提交信息格式无效")
-    if result.get("error"):
-        raise RuntimeError(result["error"])
-    message = result.get("message")
-    if not isinstance(message, str) or not message.strip():
-        raise RuntimeError("Codex 未返回提交信息")
-    return message
+
+def find_codex():
+    codex = which("codex")
+    if not codex and APP_CODEX.is_file():
+        return str(APP_CODEX)
+    return codex
 
 
 def generate_message(repo):
-    codex = which("codex")
-    if not codex and APP_CODEX.is_file():
-        codex = str(APP_CODEX)
+    codex = find_codex()
     if not codex:
         raise RuntimeError(f"找不到 Codex CLI。{MANUAL_COMMIT_HINT}")
 
@@ -110,8 +119,8 @@ def run_git_with_diagnostics(command, *, input_text=None):
             raise
 
 
-def push_repository(repo=None):
-    subprocess.run(["git", "push"], cwd=repo, check=True)
+def push_repository(repo=None, *, push_args=()):
+    subprocess.run(["git", "push", *push_args], cwd=repo, check=True)
 
 
 def commit_current_repository(message=None, *, push=False):
