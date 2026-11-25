@@ -2,10 +2,12 @@ from contextlib import ExitStack
 import fcntl
 import hashlib
 from http.client import HTTPException
+import json
 import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -13,6 +15,8 @@ import tarfile
 from tempfile import TemporaryDirectory
 from urllib.request import urlopen
 from zipfile import BadZipFile, ZipFile
+
+from share.xbotgo.xbotgo_proxy import proxy_environment
 
 
 SOURCE = Path(__file__).resolve().parent
@@ -119,6 +123,9 @@ def install_files(bin_dir, share_dir):
     files = (
         (SOURCE / "share/xbotgo/xbotgo_commit.py", share_dir / "xbotgo_commit.py", 0o644),
         (SOURCE / "share/xbotgo/xbotgo_pr.py", share_dir / "xbotgo_pr.py", 0o644),
+        (SOURCE / "share/xbotgo/xbotgo_proxy.py", share_dir / "xbotgo_proxy.py", 0o644),
+        (SOURCE / "share/xbotgo/fork_restart.js", share_dir / "fork_restart.js", 0o644),
+        (SOURCE / "share/xbotgo/fork_pull_request.sh", share_dir / "fork_pull_request.sh", 0o755),
         (SOURCE / "share/xbotgo/git-chinese-commit/SKILL.md",
          share_dir / "git-chinese-commit" / "SKILL.md", 0o644),
         (None, share_dir / ".installed", 0o644),
@@ -160,6 +167,95 @@ def install_files(bin_dir, share_dir):
             raise
 
 
+def install_fork_commands(bin_dir):
+    if platform.system() != "Darwin":
+        return
+
+    home = Path.home()
+    if not any(
+        (directory / "Fork.app/Contents/Info.plist").is_file()
+        for directory in (Path("/Applications"), home / "Applications")
+    ):
+        return
+
+    config = (home / "Library/Application Support/com.DanPristupov.Fork/custom-commands.json").resolve()
+    try:
+        commands = json.loads(config.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        commands = []
+
+    if not isinstance(commands, list):
+        raise ValueError(f"{config} 的内容应为 JSON 数组。")
+
+    bin_path = shlex.quote(str(bin_dir))
+    commands = commands or [{"version": 2}]
+    settings = {}
+    for name, subcommand in (
+        ("XBotGo Commit All", "commit"),
+        ("XBotGo Push", "push"),
+        ("XBotGo Update", "update"),
+    ):
+        settings[name] = {"action": {
+            "type": "sh",
+            "script": f'export PATH={bin_path}:/opt/homebrew/bin:/usr/local/bin:"$PATH"\n'
+                      f"exec {bin_path}/xbotgo {subcommand} 2>&1",
+            "showOutput": subcommand != "update",
+            "waitForExit": True,
+        }}
+    settings["XBotGo Pull Request"] = {"ui": {
+        "title": "XBotGo Pull Request",
+        "description": "可能提交本地改动、推送当前分支并创建或复用 GitHub PR。填写审核人后会发送 GitHub 审核请求和飞书通知。",
+        "controls": [
+            {"type": "textBox", "textBoxType": "generic", "title": "目标分支", "text": "", "placeholder": "例如 develop"},
+            {"type": "textBox", "textBoxType": "generic", "title": "审核人", "text": "",
+             "placeholder": "飞书姓名或完整邮箱（可选）"},
+        ],
+        "buttons": [
+            {"title": "运行", "action": {
+                "type": "process",
+                "path": str(bin_dir.parent / "share/xbotgo/fork_pull_request.sh"),
+                # Fork 先拆分参数，再替换文本框变量。模板中的引号会原样传入。
+                "args": "branch=$1{text} reviewer=$2{text}",
+                "waitForExit": True,
+                "showOutput": True,
+            }},
+            {"title": "取消", "action": {"type": "cancel"}},
+        ],
+    }}
+
+    changed = False
+    for name, command in settings.items():
+        existing = next((
+            entry for entry in commands
+            if isinstance(entry, dict) and entry.get("target") == "repository" and entry.get("name") == name
+        ), None)
+        if existing is None:
+            commands.append({"name": name, "target": "repository", **command})
+            changed = True
+        elif name == "XBotGo Update" and existing.get("action") == {**command["action"], "showOutput": True}:
+            existing["action"] = command["action"]
+            changed = True
+        elif name == "XBotGo Pull Request":
+            ui = command["ui"]
+            branch, reviewer = ui["controls"]
+            previous_reviewer = {**reviewer, "title": "审核人 Reviewer（可选）", "placeholder": "飞书姓名或完整邮箱"}
+            if existing.get("ui") == {**ui, "controls": [branch, previous_reviewer]}:
+                existing["ui"] = ui
+                changed = True
+    if not changed:
+        return
+
+    config.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix=".xbotgo-fork-", dir=config.parent) as temporary:
+        new = Path(temporary) / config.name
+        new.write_text(json.dumps(commands, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if config.exists():
+            shutil.copymode(config, new)
+        else:
+            new.chmod(0o600)
+        os.replace(new, config)
+
+
 def install(prefix):
     if prefix == SOURCE:
         raise ValueError("请为 xbotgo 选择源码目录以外的安装位置。")
@@ -175,6 +271,10 @@ def install(prefix):
         ensure_release_cli(bin_dir, "gh")
         ensure_release_cli(bin_dir, "lark-cli")
         install_files(bin_dir, share_dir)
+        try:
+            install_fork_commands(bin_dir)
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"Fork 自定义命令安装失败：{error}", file=sys.stderr)
 
     print(f"已安装 {bin_dir / 'xbotgo'}")
     if str(bin_dir) not in os.get_exec_path():
@@ -184,7 +284,8 @@ def install(prefix):
 def main():
     try:
         prefix = Path(os.environ.get("XBOTGO_INSTALL_PREFIX") or Path.home() / ".local")
-        install(prefix.resolve())
+        with proxy_environment():
+            install(prefix.resolve())
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"xbotgo 安装失败：{error}", file=sys.stderr)
         return 1

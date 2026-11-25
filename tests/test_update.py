@@ -43,6 +43,7 @@ class UpdateTest(unittest.TestCase):
         self.pre_commit = self.write_tool("pre-commit", "pre-commit 1.2.3")
         self.write_tool("gh", "gh version existing")
         self.write_tool("lark-cli", "lark-cli version existing")
+        self.write_tool("osascript", "osascript fixture")
         self.env = {
             **os.environ,
             "HOME": str(self.home),
@@ -143,6 +144,12 @@ urllib.request.urlopen = download
         installed_prefix = self.home / ".local" if prefix is None else prefix
         return installed_prefix / "bin" / "xbotgo"
 
+    def mock_fork(self):
+        contents = self.home / "Applications/Fork.app/Contents"
+        contents.mkdir(parents=True)
+        (contents / "Info.plist").touch()
+        return self.home / "Library/Application Support/com.DanPristupov.Fork/custom-commands.json"
+
     def publish_new_version(self):
         cli = self.remote / "bin" / "xbotgo"
         cli.write_text(cli.read_text().replace("XBotGo 团队命令行工具", "XBotGo 更新测试版本"))
@@ -162,6 +169,290 @@ urllib.request.urlopen = download
         self.assertFalse((self.home / ".local/share/xbotgo/pre-commit-venv").exists())
         self.assertEqual(self.run_command(installed, "commit", "--help").returncode, 0)
         self.assertEqual(self.run_command(installed, "update").returncode, 0)
+
+    @unittest.skipUnless(sys.platform == "darwin", "需要 macOS")
+    def test_update_requests_fork_restart_only_after_success(self):
+        installed = self.install()
+        request = self.root / "fork-restart-request"
+        osascript = self.tools / "osascript"
+        osascript.write_text(r'''#!/bin/sh
+printf '%s\n' "$@" > "$TEST_FORK_RESTART_REQUEST"
+''', encoding="utf-8")
+        env = {**self.env, "TEST_FORK_RESTART_REQUEST": str(request)}
+        self.remote.rename(self.root / "offline")
+
+        result = self.run_command(installed, "update", env=env, check=False)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(request.exists())
+        (self.root / "offline").rename(self.remote)
+        result = self.run_command(installed, "update", env=env)
+
+        self.assertIn("已更新", result.stdout)
+        deadline = time.monotonic() + 3
+        while not request.is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(request.is_file())
+        helper = installed.parent.parent / "share/xbotgo/fork_restart.js"
+        self.assertTrue(helper.is_file())
+        self.assertEqual(request.read_text(encoding="utf-8").splitlines(), ["-l", "JavaScript", str(helper)])
+
+    @unittest.skipUnless(sys.platform == "darwin", "需要 macOS")
+    def test_fork_restart_uses_process_exit_even_when_app_state_is_stale(self):
+        helper = (SOURCE / "share/xbotgo/fork_restart.js").read_text(encoding="utf-8")
+        fixture = """
+function exercise(modalResponse) {
+    let running = true;
+    let opened = false;
+    const buttons = [];
+    const fork = {processIdentifier: 42, isTerminated: false, terminate: true, bundleURL: {path: "/Fork.app"}};
+    const runningApps = {count: 1, firstObject: fork, objectAtIndex() { return fork; }};
+    const objc = {import() {}, bindFunction() {}, unwrap(value) { return value; }};
+    const bridge = Object.assign(values => values, {
+        kill(pid, signal) { return pid === 42 && signal === 0 && running ? 0 : -1; },
+        NSRunningApplication: {runningApplicationsWithBundleIdentifier() { return runningApps; }},
+        NSApplication: {sharedApplication: {setActivationPolicy() {}, activateIgnoringOtherApps() {}}},
+        NSApplicationActivationPolicyAccessory: "1",
+        NSAlertFirstButtonReturn: "1000",
+        NSAlertSecondButtonReturn: "1001",
+        NSAlert: {alloc: {init: {
+            runModal: modalResponse,
+            addButtonWithTitle(title) {
+                const button = {title};
+                buttons.push(button);
+                return button;
+            }
+        }}},
+        NSDate: {dateWithTimeIntervalSinceNow() {
+            return {get timeIntervalSinceNow() { return running ? 1 : 0; }};
+        }},
+        NSRunLoop: {currentRunLoop: {runUntilDate() { running = false; }}},
+        NSTask: {alloc: {init: {
+            setLaunchPath(path) { if (path !== "/usr/bin/open") throw Error("bad launcher"); },
+            setArguments(args) { if (args[0] !== "-a" || args[1] !== "/Fork.app") throw Error("bad launch"); },
+            get launch() { opened = true; }
+        }}}
+    });
+    new Function("ObjC", "$", SOURCE + "\\nrun();")(objc, bridge);
+    return {opened, buttons};
+}
+function run() {
+    return JSON.stringify([exercise(1000), exercise(1001)]);
+}
+"""
+        script = "const SOURCE = " + json.dumps(helper) + ";\n" + fixture
+        result = self.run_command("/usr/bin/osascript", "-l", "JavaScript", "-e", script)
+        confirmed, deferred = json.loads(result.stdout)
+        self.assertEqual(confirmed["buttons"], [
+            {"title": "重启 Fork"}, {"title": "稍后", "keyEquivalent": "\x1b"},
+        ])
+        self.assertTrue(confirmed["opened"])
+        self.assertFalse(deferred["opened"])
+
+    def test_installer_and_updater_pass_macos_proxy_to_children(self):
+        hooks = self.root / "proxy-fixture"
+        hooks.mkdir()
+        events = self.root / "proxy-events"
+        (hooks / "sitecustomize.py").write_text('''import json
+import os
+import platform
+import subprocess
+
+run = subprocess.run
+platform.system = lambda: "Darwin"
+
+def run_with_proxy_fixture(args, **kwargs):
+    if args == ["/usr/sbin/scutil", "--proxy"]:
+        settings = """<dictionary> {
+  ExceptionsList : <array> {
+    0 : *.example.invalid
+  }
+  HTTPEnable : 1
+  HTTPProxy : 127.0.0.1
+  HTTPPort : 8118
+  HTTPSEnable : 1
+  HTTPSProxy : 127.0.0.1
+  HTTPSPort : 8119
+}
+"""
+        return subprocess.CompletedProcess(args, 0, stdout=settings)
+    clone = args[:2] == ["git", "clone"]
+    retry = args[:4] == ["git", "-c", "http.version=HTTP/1.1", "clone"]
+    if clone or retry or args[:2] == ["pre-commit", "--version"]:
+        env = kwargs.get("env", os.environ)
+        keys = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+        with open(os.environ["TEST_PROXY_EVENTS"], "a", encoding="utf-8") as log:
+            operation = "git retry" if retry else args[0]
+            print(json.dumps([operation, [env.get(key) for key in keys]]), file=log)
+    if clone:
+        return subprocess.CompletedProcess(args, 128, stderr="Error in the HTTP2 framing layer")
+    return run(args, **kwargs)
+
+subprocess.run = run_with_proxy_fixture
+''', encoding="utf-8")
+        self.env = {key: value for key, value in self.env.items() if not key.lower().endswith("_proxy")}
+        self.env.update(PYTHONPATH=str(hooks), TEST_PROXY_EVENTS=str(events))
+
+        installed = self.install()
+        self.run_command(installed, "update")
+
+        values = ["http://127.0.0.1:8118", "http://127.0.0.1:8119"] * 2 + [".example.invalid"]
+        observed = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+        self.assertIn(["pre-commit", values], observed)
+        self.assertIn(["git", values], observed)
+        self.assertIn(["git retry", values], observed)
+
+    def test_install_creates_fork_commands_for_custom_prefix_once(self):
+        self.mock_cli_releases()
+        config = self.mock_fork()
+        prefix = self.root / "custom 'prefix $name"
+
+        installed = self.install(prefix)
+        self.assertTrue(config.is_file())
+        original = config.read_bytes()
+        commands = json.loads(original)
+        self.assertEqual(len(commands), 5)
+        version, commit, push, update, pull_request = commands
+        self.assertEqual(version, {"version": 2})
+        self.assertEqual(commit["name"], "XBotGo Commit All")
+        self.assertEqual(push["name"], "XBotGo Push")
+        self.assertEqual(update["name"], "XBotGo Update")
+        self.assertEqual(pull_request["name"], "XBotGo Pull Request")
+        for command in (commit, push, update):
+            self.assertEqual(command["target"], "repository")
+            self.assertEqual(command["action"]["type"], "sh")
+            self.assertTrue(command["action"]["waitForExit"])
+        self.assertTrue(commit["action"]["showOutput"])
+        self.assertTrue(push["action"]["showOutput"])
+        self.assertFalse(update["action"]["showOutput"])
+        result = subprocess.run(
+            ["/bin/bash", "-c", commit["action"]["script"]], cwd=self.remote, env=self.env,
+            text=True, capture_output=True, check=True, timeout=30,
+        )
+        self.assertEqual(result.stdout.strip(), "没有改动可提交。")
+
+        destination = self.root / "push-destination.git"
+        self.run_command("git", "init", "--quiet", "--bare", destination)
+        self.git("remote", "add", "origin", str(destination))
+        self.git("config", "remote.origin.push", "refs/heads/main:refs/heads/main")
+        subprocess.run(
+            ["/bin/bash", "-c", push["action"]["script"]], cwd=self.remote, env=self.env,
+            text=True, capture_output=True, check=True, timeout=30,
+        )
+        self.assertEqual(
+            self.run_command("git", "--git-dir", destination, "rev-parse", "refs/heads/main").stdout,
+            self.run_command("git", "-C", self.remote, "rev-parse", "HEAD").stdout,
+        )
+
+        self.publish_new_version()
+        result = self.run_command("/bin/bash", "-c", update["action"]["script"])
+        self.assertIn("已更新", result.stdout)
+        self.assertIn("XBotGo 更新测试版本", self.run_command(installed, "--help").stdout)
+        self.assertEqual(config.read_bytes(), original)
+
+        self.install(prefix)
+        self.assertEqual(config.read_bytes(), original)
+
+    def test_fork_pull_request_passes_native_dialog_text_to_cli(self):
+        self.mock_cli_releases()
+        config = self.mock_fork()
+        installed = self.install(self.root / "custom 'prefix $name")
+        commands = json.loads(config.read_bytes())
+        command = next((item for item in commands if item.get("name") == "XBotGo Pull Request"), None)
+        self.assertIsNotNone(command)
+        self.assertEqual(command["target"], "repository")
+        dialog = command["ui"]
+        self.assertEqual(dialog["title"], "XBotGo Pull Request")
+        self.assertEqual(
+            [(field["title"], field["type"], field["textBoxType"], field["text"]) for field in dialog["controls"]],
+            [("目标分支", "textBox", "generic", ""), ("审核人", "textBox", "generic", "")],
+        )
+        self.assertEqual(dialog["controls"][1]["placeholder"], "飞书姓名或完整邮箱（可选）")
+        confirm, cancel = dialog["buttons"]
+        self.assertEqual(cancel["action"], {"type": "cancel"})
+        action = confirm["action"]
+        self.assertEqual(action["type"], "process")
+        self.assertTrue(action["waitForExit"])
+
+        installed.write_text('#!/bin/sh\nprintf "%s\\n" "$PWD" "$@"\n', encoding="utf-8")
+        for reviewer in ("", "   ", "周明", "Alex Chen", "reviewer@example.invalid", "O'Connor $name"):
+            with self.subTest(reviewer=reviewer):
+                arguments = [token.replace("$1{text}", "release/1.2").replace("$2{text}", reviewer)
+                             for token in action["args"].split()]
+                result = self.run_command(action["path"], *arguments)
+                reviewer_args = [f"--reviewer={reviewer}"] if reviewer.strip() else []
+                self.assertEqual(result.stdout.splitlines(), [str(self.caller), "pr", *reviewer_args, "--", "release/1.2"])
+
+        for branch in ("", "   "):
+            with self.subTest(branch=branch):
+                arguments = [token.replace("$1{text}", branch).replace("$2{text}", "")
+                             for token in action["args"].split()]
+                result = self.run_command(action["path"], *arguments, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("请输入目标分支", result.stderr)
+                self.assertEqual(result.stdout, "")
+
+    def test_update_adds_fork_command_and_preserves_existing_commands(self):
+        self.mock_cli_releases("Linux")
+        config = self.mock_fork()
+        installed = self.install()
+        self.assertFalse(config.exists())
+        self.env["TEST_RELEASE_SYSTEM"] = "Darwin"
+        existing = [
+            {"version": 2},
+            {"name": "查看状态", "target": "repository", "action": {"type": "sh", "script": "git status"}},
+            {"name": "XBotGo Commit All", "target": "repository",
+             "action": {"type": "sh", "script": "echo customized commit"}},
+        ]
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
+        config.chmod(0o640)
+
+        self.run_command(installed, "update")
+        commands = json.loads(config.read_bytes())
+        self.assertEqual(commands[:-3], existing)
+        push, update, pull_request = commands[-3:]
+        self.assertEqual([push["name"], update["name"], pull_request["name"]],
+                         ["XBotGo Push", "XBotGo Update", "XBotGo Pull Request"])
+        self.assertEqual(config.stat().st_mode & 0o777, 0o640)
+
+        update["action"]["script"] = "echo customized"
+        update["action"]["showOutput"] = True
+        pull_request["ui"]["title"] = "自定义 PR 对话框"
+        pull_request["ui"]["controls"][1].update(title="审核人 Reviewer（可选）", placeholder="飞书姓名或完整邮箱")
+        customized = json.dumps(commands).encode()
+        config.write_bytes(customized)
+        self.run_command(installed, "update")
+        self.assertEqual(config.read_bytes(), customized)
+
+    def test_update_migrates_existing_managed_fork_commands(self):
+        self.mock_cli_releases()
+        config = self.mock_fork()
+        installed = self.install()
+        current = config.read_bytes()
+        commands = json.loads(current)
+        update = next(item for item in commands if item.get("name") == "XBotGo Update")
+        update["action"]["showOutput"] = True
+        pull_request = next(item for item in commands if item.get("name") == "XBotGo Pull Request")
+        pull_request["ui"]["controls"][1].update(title="审核人 Reviewer（可选）", placeholder="飞书姓名或完整邮箱")
+        config.write_text(json.dumps(commands), encoding="utf-8")
+
+        self.run_command(installed, "update")
+
+        self.assertEqual(json.loads(config.read_bytes()), json.loads(current))
+
+    def test_install_warns_and_preserves_invalid_fork_config(self):
+        self.mock_cli_releases()
+        config = self.mock_fork()
+        config.parent.mkdir(parents=True)
+        config.write_bytes(b"invalid JSON")
+
+        result = self.run_command(SOURCE / "install.sh")
+
+        self.assertIn("Fork 自定义命令安装失败", result.stderr)
+        self.assertEqual(config.read_bytes(), b"invalid JSON")
+        installed = self.home / ".local/bin/xbotgo"
+        self.assertEqual(self.run_command(installed, "commit", "--help").returncode, 0)
 
     def test_install_only_downloads_missing_cli_and_reuses_it_on_update(self):
         self.mock_cli_releases("Linux")
@@ -277,6 +568,41 @@ urllib.request.urlopen = download
         after = self.run_command(installed, "pr", "develop", check=False)
         self.assertEqual(after.returncode, 1, after.stderr)
         self.assertIn("xbotgo pr 失败", after.stderr)
+
+    def test_update_retries_http2_failure_with_http11(self):
+        installed = self.install()
+        self.publish_new_version()
+        transport = self.root / "transport"
+        transport.mkdir()
+        git = transport / "git"
+        git.write_text(r'''#!/bin/sh
+if [ "$1" = clone ]; then
+    printf '%s\n' default >> "$TEST_CLONE_ATTEMPTS"
+    /bin/mkdir "$7"
+    touch "$7/partial"
+    printf '%s\n' 'fatal: Error in the HTTP2 framing layer' >&2
+    exit 128
+fi
+if [ "$1" = -c ] && [ "$2" = http.version=HTTP/1.1 ] && [ "$3" = clone ]; then
+    printf '%s\n' HTTP/1.1 >> "$TEST_CLONE_ATTEMPTS"
+fi
+exec "$TEST_REAL_GIT" "$@"
+''')
+        git.chmod(0o755)
+        attempts = self.root / "clone-attempts"
+        env = {
+            **self.env,
+            "PATH": f"{transport}{os.pathsep}{self.env['PATH']}",
+            "TEST_CLONE_ATTEMPTS": str(attempts),
+            "TEST_REAL_GIT": str(self.tools / "git"),
+        }
+
+        result = self.run_command(installed, "update", env=env, check=False)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("HTTP/1.1", result.stderr)
+        self.assertEqual(attempts.read_text().splitlines(), ["default", "HTTP/1.1"])
+        self.assertIn("XBotGo 更新测试版本", self.run_command(installed, "--help").stdout)
 
     def test_clone_failure_preserves_installed_version(self):
         installed = self.install()
