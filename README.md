@@ -33,18 +33,24 @@ export PATH="$HOME/.local/bin:$PATH"
 
 可通过 `XBOTGO_INSTALL_PREFIX` 指定其他安装前缀。
 
-macOS 上安装或更新时，如果在 `/Applications` 或 `~/Applications` 检测到 Fork，安装器会添加以下全局自定义命令，并保留已有命令。重新打开 Fork 后，按 `⌘P` 搜索命令。
-
-- **XBotGo Commit All** 暂存当前仓库的全部改动，自动生成说明并创建本地提交。
-- **XBotGo Push** 在当前仓库运行 `xbotgo push`，有改动时先自动提交，再按 Git 配置推送，并显示结果。
-- **XBotGo Pull Request** 输入要合入的目标分支，可选填一位审核人的飞书姓名或完整邮箱，然后在当前仓库运行 `xbotgo pr`。
-- **XBotGo Update** 运行 `xbotgo update`，更新当前安装的 XBotGo Tools。更新输出可在 Fork 的 Activity Manager 查看。
-
 ### 代理
 
 macOS 上，`xbotgo` 和安装器优先使用已有的终端代理变量，缺失时读取系统网络设置中的 HTTP、HTTPS 和 SOCKS 代理。Fork 的自定义命令也使用这套规则。普通 Git SSH 连接使用 SOCKS，已有的 SSH 跳板、自定义命令和身份配置继续生效。Linux 继承现有代理环境。
 
 `NO_PROXY` 优先于系统排除项。Web 请求按各工具支持的格式应用排除规则，短主机名可以在 `NO_PROXY` 中明确列出。Git SSH 也会按系统设置识别短主机名和 IP 网段。此版本支持静态代理配置。
+
+## Fork 自定义命令
+
+在 macOS 上安装或更新 XBotGo Tools 时，如果安装器在 `/Applications` 或 `~/Applications` 找到 Fork，就会自动注册四个全局自定义命令，并保留已有命令。
+
+重新打开 Fork，在目标仓库窗口点击工具栏的分享图标，即可在菜单底部找到 XBotGo 命令。也可以按 `⌘P` 搜索命令。
+
+![Fork 仓库窗口工具栏的分享菜单，底部显示四个 XBotGo 自定义命令](docs/assets/fork-custom-commands.png)
+
+- **XBotGo Commit All** 暂存当前仓库的全部改动，自动生成说明并创建本地提交。
+- **XBotGo Pull Request** 输入要合入的目标分支，可选填一位审核人的飞书姓名或完整邮箱，然后在当前仓库运行 `xbotgo pr`。
+- **XBotGo Push** 在当前仓库运行 `xbotgo push`，有改动时先自动提交，再按 Git 配置推送，并显示结果。
+- **XBotGo Update** 运行 `xbotgo update`，更新当前安装的 XBotGo Tools。更新输出可在 Fork 的 Activity Manager 查看。
 
 ## `xbotgo update`
 
