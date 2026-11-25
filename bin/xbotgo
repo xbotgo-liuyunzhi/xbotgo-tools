@@ -74,12 +74,12 @@ def run_command(args, prefix):
         update_installation(prefix)
         return
 
-    from xbotgo_commit import commit_current_repository, push_repository
+    from xbotgo_commit import commit_current_repository, push_current_repository
 
     if args.command == "commit":
         commit_current_repository(args.message, push=args.push)
     elif args.command == "push":
-        push_repository()
+        push_current_repository()
     else:
         from xbotgo_pr import create_pull_request
 
@@ -93,7 +93,7 @@ def main():
     commit = commands.add_parser("commit", help="创建一次本地 Git 提交")
     commit.add_argument("-m", "--message", help="使用指定的提交信息，无需 Codex")
     commit.add_argument("-p", "--push", action="store_true", help="提交成功后执行 git push")
-    commands.add_parser("push", help="推送已有的 Git 提交")
+    commands.add_parser("push", help="有改动时先提交，再按 Git 配置推送")
     pr = commands.add_parser("pr", help="提交并推送当前分支，然后创建 GitHub PR")
     pr.add_argument("base", metavar="目标分支", help="要合并到的 GitHub 分支")
     pr.add_argument("-r", "--reviewer", action="append", metavar="审核人",

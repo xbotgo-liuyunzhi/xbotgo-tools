@@ -36,7 +36,7 @@ export PATH="$HOME/.local/bin:$PATH"
 macOS 上安装或更新时，如果在 `/Applications` 或 `~/Applications` 检测到 Fork，安装器会添加以下全局自定义命令，并保留已有命令。重新打开 Fork 后，按 `⌘P` 搜索命令。
 
 - **XBotGo Commit All** 暂存当前仓库的全部改动，自动生成说明并创建本地提交。
-- **XBotGo Push** 在当前仓库运行 `xbotgo push`，按 Git 配置推送已有提交，并显示推送结果。
+- **XBotGo Push** 在当前仓库运行 `xbotgo push`，有改动时先自动提交，再按 Git 配置推送，并显示结果。
 - **XBotGo Pull Request** 输入要合入的目标分支，可选填一位审核人的飞书姓名或完整邮箱，然后在当前仓库运行 `xbotgo pr`。
 - **XBotGo Update** 运行 `xbotgo update`，更新当前安装的 XBotGo Tools。更新输出可在 Fork 的 Activity Manager 查看。
 
@@ -87,7 +87,7 @@ xbotgo commit -p -m "提交说明"
 
 ## `xbotgo push`
 
-在目标 Git 仓库中运行 `xbotgo push`，按 Git 配置将已有提交推送到远端。命令保留工作区和暂存区的改动。
+在目标 Git 仓库中运行 `xbotgo push`。有未提交改动时，等同于 `xbotgo commit -p`，自动暂存改动、生成提交信息，并在提交成功后按 Git 配置推送。工作区干净时，直接推送已有提交。
 
 ## `xbotgo pr`
 
@@ -108,7 +108,7 @@ xbotgo pr develop --reviewer zhangsan@example.com
 ```
 
 - 需要登录 GitHub CLI（`gh auth login`），自动生成 PR 文案时还需要登录 Codex CLI。源分支和目标分支都位于当前分支的推送仓库。
-- 有未提交改动时按 `xbotgo commit` 的规则提交，有未推送提交时按 `xbotgo push` 的规则推送。当前分支没有远程跟踪关系时，推送会建立该关系。
+- 有未提交改动时按 `xbotgo commit` 的规则提交，有未推送提交时根据当前分支的 Git 配置推送。当前分支没有远程跟踪关系时，推送会建立该关系。
 - 创建 PR 时，Codex 根据远端目标分支与已推送的源分支之间的改动撰写文案。创建或复用 PR 后，标准输出的最后一行是 PR 链接。
 - 指定 `-r` 或 `--reviewer` 时，需要以当前用户身份登录 `lark-cli`，并授权通讯录查询和私聊发送权限。命令在提交和推送前核对飞书联系人及 GitHub 账号。GitHub 账号需要公开与飞书通讯录一致的邮箱。遇到同名或联系人有多个邮箱时，请用唯一的完整邮箱指定审核人。
 - 创建或复用 PR 后，先发起 GitHub 审核请求，再以当前飞书用户身份发送包含 PR 链接的私信。已有待处理的 GitHub 审核请求时，直接发送飞书通知。对同一审核人、PR 和提交，一小时内重试会使用同一个飞书幂等键。

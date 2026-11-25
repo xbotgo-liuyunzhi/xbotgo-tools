@@ -123,6 +123,19 @@ def push_repository(repo=None, *, push_args=()):
     subprocess.run(["git", "push", *push_args], cwd=repo, check=True)
 
 
+def push_current_repository():
+    work_tree = subprocess.check_output(["git", "rev-parse", "--is-inside-work-tree"], text=True)
+    if work_tree.strip() == "true":
+        changes = subprocess.check_output([
+            "git", "--no-optional-locks", "status", "--porcelain=v1", "-z",
+            "--untracked-files=normal", "--ignore-submodules=dirty",
+        ])
+        if changes:
+            commit_current_repository(push=True)
+            return
+    push_repository()
+
+
 def commit_current_repository(message=None, *, push=False):
     root = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True)
     repo = Path(root.removesuffix("\n"))

@@ -123,7 +123,7 @@ class ProxyTest(unittest.TestCase):
 
         modules = {
             "xbotgo_proxy": xbotgo_proxy,
-            "xbotgo_commit": SimpleNamespace(commit_current_repository=record, push_repository=record),
+            "xbotgo_commit": SimpleNamespace(commit_current_repository=record, push_current_repository=record),
             "xbotgo_pr": SimpleNamespace(create_pull_request=record),
         }
         with patch.dict(os.environ, {}, clear=True), patch.dict(sys.modules, modules), \

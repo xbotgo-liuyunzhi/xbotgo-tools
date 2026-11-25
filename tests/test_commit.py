@@ -177,27 +177,55 @@ class CommitTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.git("--git-dir", remote, "rev-parse", "main"), original_head)
 
-    def test_standalone_push_sends_existing_commits_only(self):
+    def test_standalone_push_sends_existing_commits_when_clean(self):
         remote = self.add_remote()
-        self.git("commit", "--quiet", "--allow-empty", "-m", "Unpushed commit")
-        head = self.git("rev-parse", "HEAD")
+        (self.repo / ".git" / "info" / "exclude").write_text("ignored.txt\n", encoding="utf-8")
+        (self.repo / "ignored.txt").write_text("ignored\n", encoding="utf-8")
         self.git("add", "settings.txt")
-        (self.repo / "settings.txt").write_text("updated settings\n", encoding="utf-8")
-        status = self.git("status", "--porcelain")
+        self.git("commit", "--quiet", "-m", "Unpushed settings")
+        head = self.git("rev-parse", "HEAD")
 
         result = self.run_command(CLI, "push")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.git("--git-dir", remote, "rev-parse", "main"), head)
         self.assertEqual(self.git("rev-parse", "HEAD"), head)
-        self.assertEqual(self.git("status", "--porcelain"), status)
         self.assertEqual(self.prompts(), [])
 
-    def test_standalone_push_reports_git_failure(self):
+    def test_standalone_push_commits_and_pushes_staged_and_unstaged_changes(self):
+        remote = self.add_remote()
+        self.git("add", "settings.txt")
+        (self.repo / "settings.txt").write_text("updated settings\n", encoding="utf-8")
+        message = "fix(settings): 调整设置"
+        self.codex_responds_with({"message": message, "error": None})
+
         result = self.run_command(CLI, "push")
 
-        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        head = self.git("rev-parse", "HEAD")
+        self.assertEqual(result.stdout, f"{head}\n{message}\n")
+        self.assertEqual(self.git("--git-dir", remote, "rev-parse", "main"), head)
+        self.assertEqual(self.git("--git-dir", remote, "show", "main:settings.txt"), "updated settings")
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_standalone_push_commits_untracked_files_hidden_by_status_config(self):
+        remote = self.add_remote()
+        self.git("config", "status.showUntrackedFiles", "no")
+        self.codex_responds_with({"message": "feat(settings): 添加设置", "error": None})
+
+        result = self.run_command(CLI, "push")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("--git-dir", remote, "ls-tree", "--name-only", "main"), "settings.txt")
+
+    def test_standalone_push_reports_git_failure(self):
+        (self.repo / "settings.txt").unlink()
+
+        result = self.run_command(CLI, "push")
+
+        self.assertEqual(result.returncode, 1)
         self.assertIn("xbotgo push 失败", result.stderr)
+        self.assertEqual(self.prompts(), [])
 
     def test_first_draft_success_shows_only_progress_and_commit_result(self):
         message = "fix(settings): 调整设置"
