@@ -91,13 +91,13 @@ xbotgo commit -p -m "提交说明"
 
 ## `xbotgo pr`
 
-**1. 一条命令创建 PR。** 按需提交工作区改动并推送当前分支，再创建 GitHub PR。
+![1. 一条命令创建 PR。](docs/assets/pr-1-one-command-text-b45980.svg) 按需提交工作区改动并推送当前分支，再创建 GitHub PR。
 
-**2. 自动写 PR 标题和正文。** Codex 根据本次要合入的改动生成中文标题和 Markdown 正文。
+![2. 自动写 PR 标题和正文。](docs/assets/pr-2-auto-description-text-b45980.svg) Codex 根据本次要合入的改动生成中文标题和 Markdown 正文。
 
-**3. 指定审核人并发送通知。** 加 `-r` 可按飞书姓名或完整邮箱指定一位审核人，发起 GitHub 审核请求并发送飞书私信。
+![3. 指定审核人并发送通知。](docs/assets/pr-3-notify-reviewer-text-b45980.svg) 加 `-r` 可按飞书姓名或完整邮箱指定一位审核人，发起 GitHub 审核请求并发送飞书私信。
 
-**4. 重试时复用已有 PR。** 同一源分支和目标分支已有开放 PR 时，直接复用并继续执行指定的审核步骤。
+![4. 重试时复用已有 PR。](docs/assets/pr-4-reuse-on-retry-text-b45980.svg) 同一源分支和目标分支已有开放 PR 时，直接复用并继续执行指定的审核步骤。
 
 在要提交 PR 的 Git 分支上运行，传入要合入的远端分支名。
 
